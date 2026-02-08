@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  portal:
+    build: ./portal
+    ports:
+      - "5175:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
