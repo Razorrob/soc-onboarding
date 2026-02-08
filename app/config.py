@@ -1,7 +1,6 @@
 """Application configuration using Pydantic Settings."""
 import os
-from typing import Optional, Union
-from pydantic import field_validator
+from typing import Optional
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -30,19 +29,13 @@ class Settings(BaseSettings):
     # Application Insights
     appinsights_connection_string: Optional[str] = None
 
-    # CORS - accepts comma-separated string or list
-    cors_origins: list[str] = [
-        "http://localhost:5173",
-        "http://localhost:5175",
-        "http://localhost:3000",
-    ]
+    # CORS - comma-separated string
+    cors_origins_str: str = "http://localhost:5173,http://localhost:5175,http://localhost:3000"
 
-    @field_validator('cors_origins', mode='before')
-    @classmethod
-    def parse_cors_origins(cls, v: Union[str, list]) -> list:
-        if isinstance(v, str):
-            return [origin.strip() for origin in v.split(',') if origin.strip()]
-        return v
+    @property
+    def cors_origins(self) -> list[str]:
+        """Parse CORS origins from comma-separated string."""
+        return [origin.strip() for origin in self.cors_origins_str.split(',') if origin.strip()]
 
     class Config:
         env_file = ".env"
