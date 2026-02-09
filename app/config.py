@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     appinsights_connection_string: Optional[str] = None
 
     # CORS - comma-separated string
-    cors_origins_str: str = "http://localhost:5173,http://localhost:5175,http://localhost:3000"
+    cors_origins_str: str = "http://localhost:5173,http://localhost:5175,http://localhost:3000,https://onboard.soctierzero.com"
 
     @property
     def cors_origins(self) -> list[str]:
