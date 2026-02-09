@@ -59,7 +59,7 @@ jobs:
           cd portal
           npm run build
         env:
-          VITE_API_URL: https://soc-onboarding-backend.proudmushroom-a56f714e.australiaeast.azurecontainerapps.io
+          VITE_API_URL: https://onboard-api.soctierzero.com
 
       - name: Deploy to Static Web App
         uses: Azure/static-web-apps-deploy@v1

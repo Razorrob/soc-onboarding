@@ -350,7 +350,7 @@ async def get_deploy_url(
         "workspaceName": {"value": workspace_name},
         "tenantId": {"value": tenant_id},
         "customerApiKey": {"value": api_key},
-        "saasEndpoint": {"value": "https://soc-t0-saas.azurewebsites.net"}
+        "saasEndpoint": {"value": "https://webhooks.soctierzero.com"}
     }
 
     if location:
@@ -383,7 +383,7 @@ async def get_deploy_url(
             "tenantId": tenant_id,
             "resourceGroup": resource_group,
             "customerApiKey": api_key,
-            "saasEndpoint": "https://soc-t0-saas.azurewebsites.net",
+            "saasEndpoint": "https://webhooks.soctierzero.com",
             "location": location
         }
     }
