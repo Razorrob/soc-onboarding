@@ -11,6 +11,7 @@ import httpx
 
 from app.config import get_settings
 from app.services import get_cosmos_service
+from app.services.postgres_customer_service import get_postgres_customer_service
 
 router = APIRouter()
 
@@ -237,8 +238,8 @@ class RegenerateApiKeyResponse(BaseModel):
 @router.get("/customer-status")
 async def check_customer_status(tenant_id: str = Query(..., description="Azure AD tenant ID")):
     """Check if a customer already exists for this tenant."""
-    cosmos = get_cosmos_service()
-    existing = await cosmos.get_customer_by_tenant(tenant_id)
+    pg = get_postgres_customer_service()
+    existing = await pg.get_customer_by_tenant(tenant_id)
 
     if existing:
         return CustomerStatusResponse(
@@ -256,29 +257,29 @@ async def check_customer_status(tenant_id: str = Query(..., description="Azure A
 @router.post("/regenerate-api-key", response_model=RegenerateApiKeyResponse)
 async def regenerate_api_key(tenant_id: str = Query(..., description="Azure AD tenant ID")):
     """Regenerate API key for an existing customer. The old key will be invalidated."""
-    cosmos = get_cosmos_service()
+    pg = get_postgres_customer_service()
 
     # Find existing customer
-    existing = await cosmos.get_customer_by_tenant(tenant_id)
+    existing = await pg.get_customer_by_tenant(tenant_id)
     if not existing:
         raise HTTPException(
             status_code=404,
             detail="No customer found for this tenant. Please complete onboarding first."
         )
 
-    # Generate new API key
-    new_api_key = f"soc_{secrets.token_urlsafe(32)}"
-    api_key_hash = hashlib.sha256(new_api_key.encode()).hexdigest()
+    # Regenerate API key in PostgreSQL
+    new_api_key = await pg.regenerate_api_key(existing["id"])
 
-    # Update customer record with new key hash
-    await cosmos.update_customer_api_key(existing["id"], api_key_hash)
-
-    # Log audit event
-    await cosmos.log_audit_event(
-        customer_id=existing["id"],
-        event_type="api_key_regenerated",
-        details={"tenant_id": tenant_id}
-    )
+    # Log audit event in Cosmos DB (kept for audit trail)
+    try:
+        cosmos = get_cosmos_service()
+        await cosmos.log_audit_event(
+            customer_id=existing["id"],
+            event_type="api_key_regenerated",
+            details={"tenant_id": tenant_id}
+        )
+    except Exception:
+        pass  # Audit logging is best-effort
 
     return RegenerateApiKeyResponse(
         customer_id=existing["id"],
@@ -290,18 +291,18 @@ async def regenerate_api_key(tenant_id: str = Query(..., description="Azure AD t
 @router.post("/complete", response_model=OnboardingCompleteResponse)
 async def complete_onboarding(request: OnboardingCompleteRequest):
     """Complete customer onboarding - create customer record and return API key."""
-    cosmos = get_cosmos_service()
+    pg = get_postgres_customer_service()
 
     # Check if customer already exists for this tenant
-    existing = await cosmos.get_customer_by_tenant(request.tenant_id)
+    existing = await pg.get_customer_by_tenant(request.tenant_id)
     if existing:
         raise HTTPException(
             status_code=409,
             detail="A customer already exists for this tenant. Contact support to manage your subscription."
         )
 
-    # Create customer record
-    customer = await cosmos.create_customer(
+    # Create customer record in Logs2Graph PostgreSQL
+    customer = await pg.create_customer(
         tenant_id=request.tenant_id,
         workspace_id=request.workspace_id,
         workspace_name=request.workspace_name,
@@ -311,16 +312,20 @@ async def complete_onboarding(request: OnboardingCompleteRequest):
         ai_analysis_enabled=request.ai_analysis_enabled
     )
 
-    # Log audit event
-    await cosmos.log_audit_event(
-        customer_id=customer["id"],
-        event_type="customer_onboarded",
-        details={
-            "tenant_id": request.tenant_id,
-            "workspace_name": request.workspace_name,
-            "subscription_id": request.subscription_id
-        }
-    )
+    # Log audit event in Cosmos DB (kept for audit trail)
+    try:
+        cosmos = get_cosmos_service()
+        await cosmos.log_audit_event(
+            customer_id=customer["id"],
+            event_type="customer_onboarded",
+            details={
+                "tenant_id": request.tenant_id,
+                "workspace_name": request.workspace_name,
+                "subscription_id": request.subscription_id
+            }
+        )
+    except Exception:
+        pass  # Audit logging is best-effort
 
     return OnboardingCompleteResponse(
         customer_id=customer["id"],

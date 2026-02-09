@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # Key Vault
     key_vault_url: str = ""
 
+    # Logs2Graph PostgreSQL (unified customer database)
+    postgres_url: str = ""
+
     # Application Insights
     appinsights_connection_string: Optional[str] = None
 

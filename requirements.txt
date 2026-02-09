@@ -18,6 +18,10 @@ pydantic>=2.5.0
 pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
 
+# PostgreSQL (Logs2Graph unified DB)
+asyncpg>=0.29.0
+sqlalchemy[asyncio]>=2.0.0
+
 # Async/HTTP
 httpx>=0.26.0
 
