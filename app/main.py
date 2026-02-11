@@ -1,9 +1,19 @@
 """SOC Onboarding - FastAPI Application Entry Point."""
+# --- Prometheus multiprocess setup (MUST be before any prometheus_client import) ---
+import os
+_prom_dir = os.environ.get("PROMETHEUS_MULTIPROC_DIR", "")
+if not _prom_dir:
+    _prom_dir = os.path.join("/tmp", "prometheus_multiproc")
+    os.environ["PROMETHEUS_MULTIPROC_DIR"] = _prom_dir
+os.makedirs(_prom_dir, exist_ok=True)
+
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST, multiprocess
 from pythonjsonlogger import jsonlogger
 
 from app.config import get_settings
@@ -38,8 +48,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Prometheus metrics instrumentation
-Instrumentator().instrument(app).expose(app)
+# Prometheus metrics instrumentation (instrument only, custom /metrics endpoint below)
+Instrumentator().instrument(app)
 
 # CORS middleware
 app.add_middleware(
@@ -62,6 +72,14 @@ async def health_check():
         "service": settings.app_name,
         "version": "1.0.0"
     }
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint aggregated across all uvicorn workers."""
+    registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(registry)
+    return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
 
 
 if __name__ == "__main__":

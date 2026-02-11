@@ -71,4 +71,5 @@ onb_azure_api_duration_seconds = Histogram(
 onb_state_tokens_active = Gauge(
     "onb_state_tokens_active",
     "In-memory OAuth state tokens currently held",
+    multiprocess_mode="livesum",
 )
