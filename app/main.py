@@ -3,15 +3,21 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
+from pythonjsonlogger import jsonlogger
 
 from app.config import get_settings
 from app.api.v1.router import api_router
+import app.metrics  # noqa: F401 — register custom metrics
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# Configure structured JSON logging
+_handler = logging.StreamHandler()
+_handler.setFormatter(jsonlogger.JsonFormatter(
+    fmt="%(asctime)s %(name)s %(levelname)s %(message)s",
+    rename_fields={"asctime": "timestamp", "levelname": "level"},
+))
+logging.root.handlers = [_handler]
+logging.root.setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
@@ -31,6 +37,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Prometheus metrics instrumentation
+Instrumentator().instrument(app).expose(app)
 
 # CORS middleware
 app.add_middleware(

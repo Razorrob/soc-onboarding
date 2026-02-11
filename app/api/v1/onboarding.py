@@ -1,7 +1,9 @@
 """Customer onboarding API endpoints."""
+import logging
 import os
 import secrets
 import hashlib
+import time
 from typing import Optional
 from urllib.parse import urlencode, quote
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -10,8 +12,22 @@ from pydantic import BaseModel
 import httpx
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 from app.services import get_cosmos_service
 from app.services.postgres_customer_service import get_postgres_customer_service
+from app.metrics import (
+    onb_consent_started_total,
+    onb_consent_completed_total,
+    onb_workspaces_listed_total,
+    onb_workspace_list_duration_seconds,
+    onb_workspace_creation_total,
+    onb_workspace_creation_duration_seconds,
+    onb_onboarding_completed_total,
+    onb_api_key_generated_total,
+    onb_automation_rule_total,
+    onb_state_tokens_active,
+)
 
 router = APIRouter()
 
@@ -71,6 +87,9 @@ async def get_auth_url(
 
     auth_url = f"https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?{urlencode(params)}"
 
+    onb_consent_started_total.inc()
+    onb_state_tokens_active.set(len(_state_store))
+
     return {
         "auth_url": auth_url,
         "state": state
@@ -86,10 +105,12 @@ async def oauth_callback(
 ):
     """Handle OAuth callback from Azure AD."""
     if error:
+        onb_consent_completed_total.labels(status="failed").inc()
         raise HTTPException(status_code=400, detail=f"{error}: {error_description}")
 
     # Validate state
     if state not in _state_store:
+        onb_consent_completed_total.labels(status="failed").inc()
         raise HTTPException(status_code=400, detail="Invalid state token")
 
     stored_state = _state_store.pop(state)
@@ -98,23 +119,30 @@ async def oauth_callback(
     # Exchange code for tokens
     token_url = "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
 
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            token_url,
-            data={
-                "client_id": MULTI_TENANT_CLIENT_ID,
-                "client_secret": MULTI_TENANT_CLIENT_SECRET,
-                "code": code,
-                "redirect_uri": redirect_uri,
-                "grant_type": "authorization_code",
-                "scope": "https://management.azure.com/.default openid profile email"
-            }
-        )
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                token_url,
+                data={
+                    "client_id": MULTI_TENANT_CLIENT_ID,
+                    "client_secret": MULTI_TENANT_CLIENT_SECRET,
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                    "grant_type": "authorization_code",
+                    "scope": "https://management.azure.com/.default openid profile email"
+                }
+            )
 
-        if response.status_code != 200:
-            raise HTTPException(status_code=400, detail=f"Token exchange failed: {response.text}")
+            if response.status_code != 200:
+                onb_consent_completed_total.labels(status="failed").inc()
+                raise HTTPException(status_code=400, detail=f"Token exchange failed: {response.text}")
 
-        token_data = response.json()
+            token_data = response.json()
+    except HTTPException:
+        raise
+    except Exception:
+        onb_consent_completed_total.labels(status="failed").inc()
+        raise
 
     # Extract tenant ID from the token
     import jwt
@@ -125,6 +153,8 @@ async def oauth_callback(
         tenant_id = claims.get("tid")
     else:
         tenant_id = None
+
+    onb_consent_completed_total.labels(status="success").inc()
 
     return {
         "access_token": token_data.get("access_token"),
@@ -138,6 +168,7 @@ async def list_workspaces(
     access_token: str = Query(..., description="Azure access token from OAuth flow")
 ):
     """List Log Analytics workspaces accessible to the authenticated user."""
+    t0 = time.time()
     workspaces: list[WorkspaceInfo] = []
     debug_info = {"subscriptions_found": 0, "workspaces_checked": 0, "errors": []}
 
@@ -152,19 +183,20 @@ async def list_workspaces(
 
         if subs_response.status_code != 200:
             error_detail = f"Failed to list subscriptions (HTTP {subs_response.status_code}): {subs_response.text}"
-            print(f"[WORKSPACES] {error_detail}")
+            logger.error(error_detail, extra={"component": "workspaces"})
+            onb_workspaces_listed_total.labels(status="failed").inc()
             raise HTTPException(status_code=400, detail=error_detail)
 
         subscriptions = subs_response.json().get("value", [])
         debug_info["subscriptions_found"] = len(subscriptions)
         debug_info["subscription_names"] = [s.get("displayName", s["subscriptionId"]) for s in subscriptions]
-        print(f"[WORKSPACES] Found {len(subscriptions)} subscriptions: {debug_info['subscription_names']}")
+        logger.info(f"Found {len(subscriptions)} subscriptions: {debug_info['subscription_names']}", extra={"component": "workspaces"})
 
         # Get workspaces for each subscription
         for sub in subscriptions:
             sub_id = sub["subscriptionId"]
             sub_name = sub.get("displayName", sub_id)
-            print(f"[WORKSPACES] Checking subscription: {sub_name} ({sub_id})")
+            logger.info(f"Checking subscription: {sub_name} ({sub_id})", extra={"component": "workspaces"})
 
             # List Log Analytics workspaces
             ws_response = await client.get(
@@ -174,7 +206,7 @@ async def list_workspaces(
 
             if ws_response.status_code == 200:
                 ws_list = ws_response.json().get("value", [])
-                print(f"[WORKSPACES] Found {len(ws_list)} workspaces in {sub_name}")
+                logger.info(f"Found {len(ws_list)} workspaces in {sub_name}", extra={"component": "workspaces"})
 
                 for ws in ws_list:
                     debug_info["workspaces_checked"] += 1
@@ -213,10 +245,12 @@ async def list_workspaces(
                     ))
             else:
                 error_msg = f"Failed to list workspaces in {sub_name}: HTTP {ws_response.status_code}"
-                print(f"[WORKSPACES] {error_msg}")
+                logger.warning(error_msg, extra={"component": "workspaces"})
                 debug_info["errors"].append(error_msg)
 
-    print(f"[WORKSPACES] Total workspaces found: {len(workspaces)}")
+    logger.info(f"Total workspaces found: {len(workspaces)}", extra={"component": "workspaces"})
+    onb_workspaces_listed_total.labels(status="success").inc()
+    onb_workspace_list_duration_seconds.observe(time.time() - t0)
     return {"workspaces": workspaces, "debug": debug_info}
 
 
@@ -281,6 +315,8 @@ async def regenerate_api_key(tenant_id: str = Query(..., description="Azure AD t
     except Exception:
         pass  # Audit logging is best-effort
 
+    onb_api_key_generated_total.labels(type="regenerated").inc()
+
     return RegenerateApiKeyResponse(
         customer_id=existing["id"],
         api_key=new_api_key,
@@ -296,6 +332,7 @@ async def complete_onboarding(request: OnboardingCompleteRequest):
     # Check if customer already exists for this tenant
     existing = await pg.get_customer_by_tenant(request.tenant_id)
     if existing:
+        onb_onboarding_completed_total.labels(status="conflict").inc()
         raise HTTPException(
             status_code=409,
             detail="A customer already exists for this tenant. Contact support to manage your subscription."
@@ -326,6 +363,8 @@ async def complete_onboarding(request: OnboardingCompleteRequest):
         )
     except Exception:
         pass  # Audit logging is best-effort
+
+    onb_onboarding_completed_total.labels(status="success").inc()
 
     return OnboardingCompleteResponse(
         customer_id=customer["id"],
@@ -482,6 +521,7 @@ async def create_workspace(
     access_token: str = Query(..., description="Azure access token")
 ):
     """Create Log Analytics workspace and enable Microsoft Sentinel."""
+    t0 = time.time()
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json"
@@ -503,6 +543,7 @@ async def create_workspace(
             )
 
             if rg_response.status_code not in [200, 201]:
+                onb_workspace_creation_total.labels(status="failed").inc()
                 raise HTTPException(
                     status_code=400,
                     detail=f"Failed to create resource group: {rg_response.text}"
@@ -529,6 +570,7 @@ async def create_workspace(
         )
 
         if workspace_response.status_code not in [200, 201, 202]:
+            onb_workspace_creation_total.labels(status="failed").inc()
             raise HTTPException(
                 status_code=400,
                 detail=f"Failed to create workspace: {workspace_response.text}"
@@ -559,7 +601,10 @@ async def create_workspace(
 
         if not sentinel_enabled:
             # Log warning but don't fail - workspace is still usable
-            print(f"Warning: Failed to enable Sentinel: {sentinel_response.text}")
+            logger.warning(f"Failed to enable Sentinel: {sentinel_response.text}")
+
+    onb_workspace_creation_total.labels(status="success").inc()
+    onb_workspace_creation_duration_seconds.observe(time.time() - t0)
 
     return CreateWorkspaceResponse(
         workspace_id=workspace_id,
@@ -624,7 +669,7 @@ async def create_automation_rule(
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         # Step 1: Grant Azure Security Insights service principal the Sentinel Automation Contributor role
-        print(f"[AUTOMATION-RULE] Granting permissions to Azure Security Insights service principal...")
+        logger.info("Granting permissions to Azure Security Insights service principal...", extra={"component": "automation_rule"})
         role_assignment_name = secrets.token_urlsafe(16)  # Generate unique GUID
         role_assignment_payload = {
             "properties": {
@@ -641,10 +686,10 @@ async def create_automation_rule(
         )
 
         if role_response.status_code not in [200, 201, 409]:  # 409 = already exists, which is OK
-            print(f"[AUTOMATION-RULE] Warning: Failed to grant permissions (HTTP {role_response.status_code}): {role_response.text}")
+            logger.warning(f"Failed to grant permissions (HTTP {role_response.status_code}): {role_response.text}", extra={"component": "automation_rule"})
             # Continue anyway - role might already exist or user might have granted it manually
         else:
-            print(f"[AUTOMATION-RULE] Successfully granted permissions to Azure Security Insights service principal")
+            logger.info("Successfully granted permissions to Azure Security Insights service principal", extra={"component": "automation_rule"})
 
         # Generate unique automation rule name
         automation_rule_name = f"SOC-T0-Auto-Analyze-{secrets.token_urlsafe(8)}"
@@ -682,10 +727,12 @@ async def create_automation_rule(
 
         if response.status_code not in [200, 201, 202]:
             error_detail = f"Failed to create automation rule (HTTP {response.status_code}): {response.text}"
-            print(f"[AUTOMATION-RULE] {error_detail}")
+            logger.error(error_detail, extra={"component": "automation_rule"})
+            onb_automation_rule_total.labels(status="failed").inc()
             raise HTTPException(status_code=400, detail=error_detail)
 
-        print(f"[AUTOMATION-RULE] Successfully created: {automation_rule_name}")
+        logger.info(f"Successfully created: {automation_rule_name}", extra={"component": "automation_rule"})
+        onb_automation_rule_total.labels(status="success").inc()
 
         return CreateAutomationRuleResponse(
             automation_rule_name=automation_rule_name,
