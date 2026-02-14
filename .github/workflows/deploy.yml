@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  AZURE_CONTAINER_REGISTRY: soconboardingacr.azurecr.io
+  AZURE_CONTAINER_REGISTRY: soctierzeroacr.azurecr.io
   CONTAINER_APP_NAME: soc-onboarding-backend
   RESOURCE_GROUP: SOC-Onboarding-RG
   IMAGE_NAME: soc-onboarding-backend
@@ -23,7 +23,7 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Login to ACR
-        run: az acr login --name soconboardingacr
+        run: az acr login --name soctierzeroacr
 
       - name: Build and push Docker image
         run: |
@@ -50,7 +50,7 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Login to ACR
-        run: az acr login --name soconboardingacr
+        run: az acr login --name soctierzeroacr
 
       - name: Build and push portal image
         run: |

@@ -30,6 +30,13 @@ logging.root.handlers = [_handler]
 logging.root.setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Azure Application Insights (OpenTelemetry auto-instrumentation)
+_ai_conn = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
+if _ai_conn:
+    from azure.monitor.opentelemetry import configure_azure_monitor
+    configure_azure_monitor(connection_string=_ai_conn)
+    logger.info("Application Insights enabled")
+
 settings = get_settings()
 
 

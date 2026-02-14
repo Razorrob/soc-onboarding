@@ -25,6 +25,9 @@ sqlalchemy[asyncio]>=2.0.0
 # Async/HTTP
 httpx>=0.26.0
 
+# Distributed Tracing
+azure-monitor-opentelemetry>=1.6.0
+
 # Monitoring
 prometheus-fastapi-instrumentator>=6.1.0
 prometheus-client>=0.20.0
