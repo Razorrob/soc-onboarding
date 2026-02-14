@@ -4,10 +4,11 @@ WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 
 # Copy source and build
 COPY . .
+ENV VITE_API_URL=https://onboard-api.soctierzero.com
 RUN npm run build
 
 # Production stage

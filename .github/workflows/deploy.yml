@@ -44,28 +44,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Login to Azure
+        uses: azure/login@v2
         with:
-          node-version: '20'
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Install dependencies
+      - name: Login to ACR
+        run: az acr login --name soconboardingacr
+
+      - name: Build and push portal image
         run: |
           cd portal
-          npm install
+          docker build -t ${{ env.AZURE_CONTAINER_REGISTRY }}/soc-onboarding-frontend:${{ github.sha }} .
+          docker push ${{ env.AZURE_CONTAINER_REGISTRY }}/soc-onboarding-frontend:${{ github.sha }}
+          docker tag ${{ env.AZURE_CONTAINER_REGISTRY }}/soc-onboarding-frontend:${{ github.sha }} ${{ env.AZURE_CONTAINER_REGISTRY }}/soc-onboarding-frontend:latest
+          docker push ${{ env.AZURE_CONTAINER_REGISTRY }}/soc-onboarding-frontend:latest
 
-      - name: Build
+      - name: Deploy portal to Container App
         run: |
-          cd portal
-          npm run build
-        env:
-          VITE_API_URL: https://onboard-api.soctierzero.com
-
-      - name: Deploy to Static Web App
-        uses: Azure/static-web-apps-deploy@v1
-        with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          action: "upload"
-          app_location: "portal/dist"
-          skip_app_build: true
+          az containerapp update \
+            --name soc-onboarding-frontend \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.AZURE_CONTAINER_REGISTRY }}/soc-onboarding-frontend:${{ github.sha }}
